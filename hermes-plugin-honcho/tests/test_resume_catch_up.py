@@ -129,6 +129,22 @@ def test_late_prewarm_does_not_replace_the_resumed_dialectic():
     assert "Generic prewarm summary." not in injected
 
 
+def test_resumed_turn_with_dialectic_off_recalls_base_context_only():
+    """``dialecticCadence: 0``: the resumed-session catch-up still injects the base context but
+    starts no dialectic (and the process-start prewarm starts none either)."""
+    context_queries: list[str] = []
+    provider = _provider(context_queries, dialectic_cadence=0)
+
+    # Called on the provider directly: MemoryManager.on_turn_start would swallow an exception here.
+    provider.on_turn_start(2, CURRENT, previous_message=PREVIOUS)
+    injected = _memory(provider).prefetch_all(CURRENT)
+
+    assert context_queries[0] == PREVIOUS
+    assert f"conclusions recalled for: {PREVIOUS}" in injected
+    assert DIALECTIC_ANSWER not in injected
+    provider._manager.dialectic_query.assert_not_called()
+
+
 def _skill_message(instruction: str) -> str:
     """A slash-skill turn as Hermes expands it: activation note, skill body, then the user's instruction."""
     return (f'{skill_commands._SKILL_INVOCATION_PREFIX}"encoders" skill. {skill_commands._SINGLE_SKILL_MARKER}\n'

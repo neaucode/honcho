@@ -677,6 +677,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         dia_wait = self._first_turn_wait(self._FIRST_TURN_DIALECTIC_CAP)
         thread = self._spawn_dialectic(query, thread_name="honcho-resume-dialectic", fired_at=fired_at,
                                        log_label="resumed-session dialectic")
+        if thread is None:  # dialecticCadence 0: automatic dialectic is off
+            return True
         thread.join(timeout=dia_wait)
         if thread.is_alive():
             logger.debug("Honcho resumed-session dialectic still running after %.1fs", dia_wait)
