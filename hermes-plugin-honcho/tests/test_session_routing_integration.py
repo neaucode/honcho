@@ -1,5 +1,6 @@
 """Route against real repository/SessionDB state, without contacting Honcho."""
 
+import os
 import subprocess
 
 import pytest
@@ -97,3 +98,21 @@ def test_messaging_gateway_session_keeps_per_chat_isolation(workspace_repo):
     finally:
         runtime_cwd._SESSION_CWD.reset(token)
     assert key == "agent-main-telegram-dm-8439114563"
+
+
+def test_session_key_resolves_when_the_process_cwd_is_gone(monkeypatch, tmp_path):
+    """A worker whose workspace was deleted after it started: ``os.getcwd()`` raises
+    ``FileNotFoundError``. The key still resolves, against the home directory, instead of
+    aborting session init (which would drop every turn of the session)."""
+    home = tmp_path / "worker-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    def deleted_cwd():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "getcwd", deleted_cwd)
+    cfg = HonchoClientConfig(session_strategy="per-directory")
+    key = HonchoMemoryProvider()._resolve_session_key(cfg, "20260415_a3f2b1")
+    assert key == "worker-home"

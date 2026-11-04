@@ -15,6 +15,7 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
@@ -289,7 +290,10 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         """Resolve the Honcho session key without touching the network."""
         from agent.runtime_cwd import resolve_agent_cwd
 
-        cwd = kwargs.get("cwd") or str(resolve_agent_cwd())
+        try:
+            cwd = kwargs.get("cwd") or str(resolve_agent_cwd())
+        except OSError:  # the process cwd was deleted (e.g. a removed worker workspace)
+            cwd = str(Path.home())
         return cfg.resolve_session_name(
             cwd=cwd,
             session_title=kwargs.get("session_title"), session_id=session_id,
