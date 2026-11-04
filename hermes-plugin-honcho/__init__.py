@@ -112,6 +112,8 @@ _CONTEXT_SECTIONS = (
 )
 
 _PREWARM_QUERY = "Summarize what you know about this user. Focus on preferences, current projects, and working style."
+# Wall-clock cap on one honcho_search call, seconds: a stalled embedder otherwise holds the turn for timeout x retries.
+_SEARCH_TIMEOUT = 20.0
 
 
 class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
@@ -1022,8 +1024,30 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         if not (query := (args.get("query") or "").strip()):
             return tool_error("Missing required parameter: query")
         max_tokens = min(int(args.get("max_tokens", 800)), 2000)
-        result = self._manager.search_context(self._session_key, query, max_tokens=max_tokens, peer=args.get("peer", "user"))
-        return json.dumps({"result": result or "No relevant context found."})
+        manager, session_key, peer = self._manager, self._session_key, args.get("peer", "user")
+        # The SDK has no per-call timeout: run the search on an owned daemon thread and stop waiting at the
+        # cap. A late thread finishes on its own (bounded by the HTTP timeout) and shutdown joins it.
+        box: dict[str, Any] = {}
+
+        def _run() -> None:
+            try:
+                # raise_errors: a failed lookup raises (handle_tool_call reports it) instead of reading as a miss.
+                box["result"] = manager.search_context(session_key, query, max_tokens=max_tokens, peer=peer,
+                                                       raise_errors=True)
+            except BaseException as e:  # noqa: BLE001 — re-raised on the caller's thread
+                box["error"] = e
+
+        thread = spawn_context_thread(_run, name="honcho-search", owner=self)
+        thread.start()
+        thread.join(timeout=_SEARCH_TIMEOUT)
+        if thread.is_alive():
+            logger.warning("honcho_search failed: timed out after %gs", _SEARCH_TIMEOUT)
+            return tool_error(
+                f"Honcho search timed out after {_SEARCH_TIMEOUT:g}s. This is a backend delay, not an empty result — "
+                "the memory may still exist. Retry later.")
+        if "error" in box:
+            raise box["error"]
+        return json.dumps({"result": box.get("result") or "No relevant context found."})
 
     def _tool_reasoning(self, args: dict) -> str:
         from .session import HonchoAuthError

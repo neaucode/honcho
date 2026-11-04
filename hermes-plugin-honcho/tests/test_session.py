@@ -116,8 +116,9 @@ class TestPeerLookupHelpers:
         # user-stated facts from assistant-derived ones.
         assert "[assistant" in result
 
-    def _search_with_fallback(self, perspective_result):
-        """Run search_context with the perspective search returning (or raising) ``perspective_result``."""
+    def _search_with_fallback(self, perspective_result, fallback_error=None, **search_kwargs):
+        """Run search_context with the perspective search returning (or raising) ``perspective_result``,
+        and the peer-search fallback raising ``fallback_error`` when given."""
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
         if isinstance(perspective_result, Exception):
@@ -128,10 +129,12 @@ class TestPeerLookupHelpers:
         fallback_peer.search.return_value = [
             SimpleNamespace(content="I founded neuralancer in 2019", peer_id="robert", session_id="s-old", id="m2"),
         ]
+        if fallback_error is not None:
+            fallback_peer.search.side_effect = fallback_error
         mgr._peer_ref = MagicMock(return_value=fallback_peer)
         mgr._get_or_create_peer = MagicMock(side_effect=AssertionError("search must not create a peer"))
         with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
-            result = mgr.search_context(session.key, "neuralancer")
+            result = mgr.search_context(session.key, "neuralancer", **search_kwargs)
         return result, session, mgr, fallback_peer
 
     def test_search_context_falls_back_to_peer_search_on_empty_perspective(self):
@@ -157,6 +160,21 @@ class TestPeerLookupHelpers:
         assert "Robert runs neuralancer" in result
         mgr._peer_ref.assert_not_called()
         fallback_peer.search.assert_not_called()
+
+    def test_search_context_raise_errors_surfaces_a_failed_search(self):
+        """Both searches failed: with raise_errors the backend error propagates instead of reading as a miss."""
+        with pytest.raises(RuntimeError, match="embedder unavailable"):
+            self._search_with_fallback(RuntimeError("unknown filter"),
+                                       fallback_error=RuntimeError("embedder unavailable"), raise_errors=True)
+
+    def test_search_context_raise_errors_keeps_an_empty_perspective_a_miss(self):
+        """The perspective search answered (empty): a failing peer-search fallback stays a miss, as without
+        raise_errors, since the primary search itself did not fail."""
+        result, _session, _mgr, fallback_peer = self._search_with_fallback(
+            [], fallback_error=RuntimeError("embedder unavailable"), raise_errors=True)
+
+        assert result == ""
+        fallback_peer.search.assert_called_once()
 
     def test_peer_ref_makes_no_api_call(self):
         """The fallback's peer handle is local: building it must not get-or-create the peer."""

@@ -4,6 +4,7 @@ the one-time user-facing notice."""
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -891,7 +892,7 @@ class TestToolAuthVisibility:
 
     def test_search_tool_reports_auth_failure(self):
         class _Mgr:
-            def search_context(self, key, query, max_tokens=800, peer="user"):
+            def search_context(self, key, query, max_tokens=800, peer="user", raise_errors=False):
                 raise HonchoAuthError("Honcho rejected our credentials")
 
         out = self._provider(_Mgr()).handle_tool_call("honcho_search", {"query": "schema"})
@@ -906,6 +907,53 @@ class TestToolAuthVisibility:
         out = self._provider(_Mgr()).handle_tool_call("honcho_profile", {})
         assert "No profile facts" not in out
         assert "authentication failed" in out
+
+
+# ---------------------------------------------------------------------------
+# honcho_search: a stalled or failed backend must never read as "no context"
+# ---------------------------------------------------------------------------
+
+
+class TestSearchToolFailures:
+    def _provider(self, manager):
+        provider = HonchoMemoryProvider()
+        provider._manager = manager
+        provider._session_key = "k"
+        provider._session_initialized = True
+        return provider
+
+    def test_stalled_search_returns_a_timeout_error_at_the_cap(self, monkeypatch):
+        import hermes_plugin_honcho
+
+        monkeypatch.setattr(hermes_plugin_honcho, "_SEARCH_TIMEOUT", 0.2, raising=False)
+        release = threading.Event()
+
+        class _Mgr:
+            def search_context(self, key, query, max_tokens=800, peer="user", raise_errors=False):
+                release.wait(timeout=3.0)  # an embedder that never answers within the turn
+                return "a late hit"
+
+        try:
+            started = time.monotonic()
+            out = self._provider(_Mgr()).handle_tool_call("honcho_search", {"query": "schema"})
+            elapsed = time.monotonic() - started
+        finally:
+            release.set()
+        assert elapsed < 1.5
+        assert "timed out" in out
+        assert "No relevant context found" not in out
+
+    def test_backend_failure_reports_an_error_not_a_miss(self):
+        class _Mgr:
+            def search_context(self, key, query, max_tokens=800, peer="user", raise_errors=False):
+                if raise_errors:
+                    raise RuntimeError("embedder unavailable")
+                return ""  # what a swallowed backend failure looks like to the caller
+
+        out = self._provider(_Mgr()).handle_tool_call("honcho_search", {"query": "schema"})
+        assert "No relevant context found" not in out
+        assert "embedder unavailable" in out
+        assert "error" in json.loads(out)
 
 
 # ---------------------------------------------------------------------------

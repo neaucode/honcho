@@ -221,10 +221,14 @@ class SessionContextMixin:
             return card or (self._fetch_peer_card(target_peer_id) if target_peer_id else [])
         return self._guarded_session(session_key, _fetch, [], logging.DEBUG, "Failed to fetch peer card from Honcho: %s")
 
-    def search_context(self, session_key: str, query: str, max_tokens: int = 800, peer: str = "user") -> str:
+    def search_context(
+        self, session_key: str, query: str, max_tokens: int = 800, peer: str = "user", raise_errors: bool = False,
+    ) -> str:
         """Hybrid search over raw messages visible from ``peer``'s perspective, all sessions. Snippets
         accumulate until ``max_tokens`` (~4 chars/token) is exhausted. Returns "" when nothing matches;
-        raises HonchoAuthError on rejected credentials."""
+        raises HonchoAuthError on rejected credentials. ``raise_errors`` re-raises the backend failure
+        when both searches failed, instead of returning "", so the honcho_search tool can tell a failed
+        lookup from a miss."""
         session = self._cached_session(session_key)
         q = (query or "").strip()[:4000]  # Honcho caps query length for the embedding model.
         if not session or not q:
@@ -241,10 +245,14 @@ class SessionContextMixin:
             # moved joined_at on every peer re-add, so the filter returns [] for history the peer was
             # present for; upgrading doesn't restore those windows. A peer's own messages are always
             # in its perspective, so peer-authored search is a safe fallback for both.
-            messages = self._guarded_authed(
-                "peer search", lambda: self._peer_ref(peer_id).search(q, limit=limit),
-                None, logging.DEBUG, "Honcho peer search fallback also failed: %s",
-            )
+            def _peer_search() -> Any:
+                return self._peer_ref(peer_id).search(q, limit=limit)
+            if raise_errors and messages is _FAILED:
+                # Both searches failed: a backend error, not a miss.
+                messages = self._authed_call("peer search", _peer_search)
+            else:
+                messages = self._guarded_authed(
+                    "peer search", _peer_search, None, logging.DEBUG, "Honcho peer search fallback also failed: %s")
         if not messages:
             return ""
         # Author labels distinguish user-stated facts from assistant-derived ones.
