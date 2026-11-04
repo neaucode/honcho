@@ -159,7 +159,7 @@ Five bidirectional tools. All accept an optional `peer` parameter (`"user"` or `
 | Tool | LLM call? | Description |
 |------|-----------|-------------|
 | `honcho_profile` | No | Peer card — key facts snapshot |
-| `honcho_search` | No | Cross-session message search (hybrid semantic + keyword, ranked excerpts; 800 tok default, 2000 max) |
+| `honcho_search` | No | Cross-session message search (hybrid semantic + keyword, ranked excerpts; 800 tok default, 2000 max); hits name their Hermes session and `state.db` message row |
 | `honcho_context` | No | Full session context: summary, representation, card, messages |
 | `honcho_reasoning` | Yes | LLM-synthesized answer via dialectic `.chat()` |
 | `honcho_conclude` | No | Write, list/search, or delete persistent conclusions (list surfaces the ids delete needs) |

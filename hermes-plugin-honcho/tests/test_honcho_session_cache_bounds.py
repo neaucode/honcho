@@ -299,7 +299,7 @@ def test_flush_does_not_resurrect_an_evicted_session():
     mgr = _manager()
     session = _session(key="gone")
     session.add_message("user", "late", _synced=False)
-    peer = SimpleNamespace(message=lambda content: content)
+    peer = SimpleNamespace(message=lambda content, metadata=None: content)
     mgr._get_or_create_peer = lambda peer_id: peer
     mgr._sessions_cache[session.honcho_session_id] = SimpleNamespace(add_messages=lambda messages: None)
 
@@ -318,7 +318,7 @@ def test_flush_that_recreates_the_sdk_session_stores_its_observation_flags():
     session = _session(key="back")
     session.add_message("user", "hello", _synced=False)
     flags = {"user_observe_me": False, "user_observe_others": True, "ai_observe_me": True, "ai_observe_others": False}
-    mgr._get_or_create_peer = lambda peer_id: SimpleNamespace(message=lambda content: content)
+    mgr._get_or_create_peer = lambda peer_id: SimpleNamespace(message=lambda content, metadata=None: content)
     mgr._get_or_create_honcho_session = lambda sid, user, assistant: (_sdk_session(), [], flags)
 
     assert mgr._flush_session(session) is True
@@ -371,7 +371,7 @@ def _failing_then_recording_uploads(mgr, session):
     def refuse(messages):
         raise ConnectionError("upload refused")
 
-    mgr._get_or_create_peer = lambda peer_id: SimpleNamespace(message=lambda content: content)
+    mgr._get_or_create_peer = lambda peer_id: SimpleNamespace(message=lambda content, metadata=None: content)
     mgr._sessions_cache[session.honcho_session_id] = SimpleNamespace(add_messages=refuse)
 
     def restore():

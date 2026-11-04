@@ -61,6 +61,32 @@ def _is_internal_gateway_turn(text: str) -> bool:
     return bool(_INTERNAL_GATEWAY_TURN_RE.match(text or ""))
 
 
+def _row_id(message: Any) -> Optional[int]:
+    """The ``state.db`` ``messages.id`` the harness stamped on a persisted message dict, else None."""
+    row = message.get("_row_id") if isinstance(message, dict) else None
+    return row if isinstance(row, int) and not isinstance(row, bool) else None
+
+
+def _turn_row_ids(messages: Optional[List[Dict[str, Any]]]) -> tuple[Optional[int], Optional[int]]:
+    """``(user_row_id, assistant_row_id)`` of the turn that just ended, from the transcript the harness
+    persists (stamping ``_row_id``) before ``sync_turn``. Assistant: the final reply. User: the message
+    that opened the turn, the first user row after the previous final reply. Both None when the final
+    reply has no row, so ids never point at an earlier turn."""
+    replies = [i for i, m in enumerate(messages or ()) if isinstance(m, dict) and m.get("role") == "assistant"
+               and m.get("content") and not m.get("tool_calls")]
+    if not replies or (assistant_row := _row_id(messages[replies[-1]])) is None:
+        return None, None
+    start = replies[-2] + 1 if len(replies) > 1 else 0
+    opener = next((m for m in messages[start:replies[-1]] if isinstance(m, dict) and m.get("role") == "user"), None)
+    return _row_id(opener), assistant_row
+
+
+def _hermes_ids(session_id: str, row_id: Optional[int]) -> Dict[str, Any]:
+    """Honcho message metadata naming the Hermes session and ``state.db`` row a message came from.
+    Absent values are left out, so a message with neither is stored without metadata, as before."""
+    return {k: v for k, v in (("hermes_session_id", session_id), ("hermes_message_id", row_id)) if v not in (None, "")}
+
+
 def _cfg_usable(cfg) -> bool:
     """Enabled with a credential or a self-hosted URL to talk to."""
     return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
@@ -858,12 +884,17 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
     def sync_turn(
         self, user_content: str, assistant_content: str, *, session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
         turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record the conversation turn in Honcho (non-blocking), chunking messages that
         exceed the Honcho API limit. Honors saveMessages: false. ``turn_author`` names who wrote
         the user side. The ``on_turn_start`` stash is the fallback for callers that never pass it.
-        A bot author's turn is written into that bot's own a2a session, never the human's."""
+        A bot author's turn is written into that bot's own a2a session, never the human's.
+
+        Each stored message carries ``metadata`` ``hermes_session_id`` (the Hermes session) and
+        ``hermes_message_id`` (its ``state.db`` ``messages.id`` row), read from the ``_row_id`` the
+        harness stamps on ``messages`` when it persists the turn, so a search hit links to the row."""
         if not self._writes_enabled():
             return
         if _is_internal_gateway_turn(user_content):
@@ -905,12 +936,15 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             # Resolved before the thread starts so a following turn cannot retag a queued write.
             author_peer_id = self._manager.resolve_author_peer_id(session_key, author.get("id"), author.get("name"))
 
+        user_row_id, assistant_row_id = _turn_row_ids(messages)
+        user_meta, assistant_meta = _hermes_ids(session_id, user_row_id), _hermes_ids(session_id, assistant_row_id)
+
         def _sync():
             session = self._manager.get_or_create(session_key, **session_kwargs)
             for chunk in self._chunk_message(clean_user_content, msg_limit) if clean_user_content else ():
-                session.add_message("user", chunk, author_peer_id=author_peer_id)
+                session.add_message("user", chunk, author_peer_id=author_peer_id, metadata=user_meta)
             for chunk in self._chunk_message(clean_assistant_content, msg_limit) if clean_assistant_content else ():
-                session.add_message("assistant", chunk)
+                session.add_message("assistant", chunk, metadata=assistant_meta)
             # save() (not _flush_session) so writeFrequency batching is honored.
             self._manager.save(session)
 
