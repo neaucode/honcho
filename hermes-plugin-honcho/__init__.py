@@ -272,7 +272,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
             # Session creation can block on Honcho/DB outages, so context/hybrid startup
             # fails open in a background thread. Tools-only mode has an explicit contract:
-            # init_on_session_start=False stays lazy until the first tool call, True is eager.
+            # init_on_session_start=False creates the session on the first tool call or the first stored turn,
+            # True is eager.
             if self._recall_mode != "tools":
                 self._start_session_init_background(wait_timeout=0.1)
             elif cfg.init_on_session_start:
@@ -869,7 +870,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         if _is_internal_gateway_turn(user_content):
             logger.debug("Honcho sync skipped machine-generated gateway turn")
             return
-        if not self._ready_or_kick_init():
+        # Tools mode has no background init, so the first stored turn creates the session. The init
+        # blocks, which is safe here: sync_turn runs on the memory manager's background worker.
+        if not (self._ready_or_kick_init() or (self._recall_mode == "tools" and self._ensure_session())):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000

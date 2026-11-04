@@ -335,6 +335,37 @@ class TestToolsModeInitBehavior:
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "open-id"
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name_alt"] == "union-id"
 
+    def test_tools_lazy_first_turn_write_stores_the_turn(self):
+        """tools + initOnSessionStart=false + saveMessages=true: a session whose agent never calls a
+        Honcho tool (a one-turn kanban worker, say) still stores its turn. The first sync_turn
+        creates the session instead of dropping the write."""
+        from hermes_plugin_honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(
+            api_key="test-key", enabled=True, recall_mode="tools",
+            init_on_session_start=False, save_messages=True,
+        )
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        provider = HonchoMemoryProvider()
+        with patch("hermes_plugin_honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("hermes_plugin_honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("hermes_plugin_honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+            assert provider._session_initialized is False
+
+            provider.sync_turn("please summarize the build log", "The build passed.")
+            if provider._sync_thread is not None:
+                provider._sync_thread.join(timeout=5)
+
+        assert provider._session_initialized is True
+        mock_manager.get_or_create.assert_called_with(provider._session_key)
+        mock_manager.save.assert_called_once()
+
 
 class TestPerSessionMigrateGuard:
     """Verify migrate_memory_files is skipped under per-session strategy.
